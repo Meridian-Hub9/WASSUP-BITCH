@@ -2996,204 +2996,156 @@ end
 ----------------------------------------------------------------
 do
 	----------------------------------------------------------------
-	-- TRAP ESP (Enemy Traps) — Whole trap RED + ( ! ) AlwaysOnTop
+	-- TRAP ESP FINAL v2 — 1 ❗ per trap + low FPS impact
+	-- Red highlight + ❗ marker (logic from text_10)
 	----------------------------------------------------------------
 	local TrapESP = {
 		enabled = false,
-		conns = {},
-		highlights = {}, -- [model] = Highlight
-		markers = {},    -- [model] = BillboardGui
+		tracked = {},   -- [part] = { hl = HL, bb = BB }
+		byModel = {},   -- [model] = { parts = {}, primary = part, hl = HL, bb = BB }
+		conns   = {},
+		runId   = 0,    -- guards the cleanup loop against stop -> start overlap
 	}
 
-	-- Helper: check kung trap ba (name match, case-insensitive)
-	local function isTrapPart(obj)
-		if not obj or not obj:IsA("BasePart") then return false end
-		local n = obj.Name:lower()
-		return n:find("trap", 1, true) ~= nil
-	end
-
-	-- Helper: hanapin yung parent model ng trap part
+	-- Trap detection: parent model name = "Trap"
 	local function getTrapModel(part)
-		if not part then return nil end
-		-- Kung Model na agad ang parent
+		if not part or not part:IsA("BasePart") then return nil end
+		if not part.Parent then return nil end
 		local p = part.Parent
-		if p and p:IsA("Model") then return p end
-		-- Kung nasa folder, hanapin yung Model sa loob
-		if p and p:IsA("Folder") then
-			for _, m in ipairs(p:GetChildren()) do
-				if m:IsA("Model") and m:FindFirstChild(part.Name) then return m end
-			end
-		end
-		-- Fallback: part itself as model-ish
-		return part
+		if p.Name == "Trap" or p.Name:lower() == "trap" then return p end
+		local model = part:FindFirstAncestor("Trap")
+		if model then return model end
+		return nil
 	end
 
-	-- Helper: check kung galing sa ibang player (hindi sa'yo)
-	local function isEnemyTrap(part)
-		local ownerId = nil
-		local n = part.Name
-		local id = n:match("(%d+)")
-		if id then ownerId = tonumber(id) end
-		if part:GetAttribute("OwnerId") then
-			ownerId = part:GetAttribute("OwnerId")
-		end
-		-- Check din ang parent model attributes
-		local model = getTrapModel(part)
-		if model and model:IsA("Model") then
-			if model:GetAttribute("OwnerId") then ownerId = model:GetAttribute("OwnerId") end
-			local mid = model.Name:match("(%d+)")
-			if mid and not ownerId then ownerId = tonumber(mid) end
-		end
-		if ownerId and ownerId ~= LP.UserId then return true end
-		-- If no owner info, treat as enemy (safe default for ESP)
-		return true
-	end
+	-- Apply 1 highlight + 1 billboard per MODEL (not per part)
+	local function applyESPModel(model)
+		if not model or not model.Parent then return end
+		if TrapESP.byModel[model] then return end
 
-	local function createTrapESP(trapObj)
-		if not trapObj or not trapObj.Parent then return end
-		-- Remove old
-		if TrapESP.highlights[trapObj] then
-			pcall(function() TrapESP.highlights[trapObj]:Destroy() end)
-			TrapESP.highlights[trapObj] = nil
-		end
-		if TrapESP.markers[trapObj] then
-			pcall(function() TrapESP.markers[trapObj]:Destroy() end)
-			TrapESP.markers[trapObj] = nil
-		end
-
-		-- 1) RED highlight sa BUONG trap (lahat ng parts)
-		local hl = Instance.new("Highlight")
-		hl.Name = "MeridianTrapHL"
-		hl.Adornee = trapObj
-		hl.FillColor = Color3.fromRGB(220, 30, 30)      -- red fill
-		hl.FillTransparency = 0.35                       -- medyo kita pa rin ang trap sa loob
-		hl.OutlineColor = Color3.fromRGB(255, 60, 60)   -- bright red outline
-		hl.OutlineTransparency = 0
-		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- kita kahit sa likod ng pader
-		hl.Parent = trapObj
-		TrapESP.highlights[trapObj] = hl
-
-		-- 2) ( ! ) marker sa ibabaw ng buong trap
-		-- Compute yung top position ng model
-		local topY = 0
-		local centerX, centerZ = 0, 0
-		local count = 0
-		if trapObj:IsA("Model") then
-			local cf, size = trapObj:GetBoundingBox()
-			topY = cf.Position.Y + size.Y / 2 + 1.5
-			centerX = cf.Position.X
-			centerZ = cf.Position.Z
-		elseif trapObj:IsA("BasePart") then
-			topY = trapObj.Position.Y + trapObj.Size.Y / 2 + 1.5
-			centerX = trapObj.Position.X
-			centerZ = trapObj.Position.Z
-		end
-
-		-- Attachment para sumunod sa trap
-		local att = Instance.new("Attachment")
-		att.Name = "MeridianTrapMarkAtt"
-		att.WorldPosition = Vector3.new(centerX, topY, centerZ)
-		att.Parent = trapObj:IsA("Model") and (trapObj.PrimaryPart or trapObj:FindFirstChildWhichIsA("BasePart")) or trapObj
-		-- Kung walang BasePart, fallback
-		if not att.Parent then
-			att:Destroy()
-			return
-		end
-
-		local bb = Instance.new("BillboardGui")
-		bb.Name = "MeridianTrapMark"
-		bb.Size = UDim2.new(0, 36, 0, 36)      -- fixed size (hindi lumiliit)
-		bb.StudsOffset = Vector3.new(0, 0, 0)
-		bb.AlwaysOnTop = true
-		bb.LightInfluence = 0
-		bb.MaxDistance = 5000
-		bb.Adornee = att
-		bb.Parent = att
-
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1, 0, 1, 0)
-		label.BackgroundTransparency = 1
-		label.Text = "(!)"
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.TextStrokeColor3 = Color3.fromRGB(180, 0, 0)
-		label.TextStrokeTransparency = 0
-		label.Font = Enum.Font.GothamBlack
-		label.TextScaled = true
-		label.Parent = bb
-
-		TrapESP.markers[trapObj] = bb
-	end
-
-	local function removeTrapESP(trapObj)
-		if TrapESP.highlights[trapObj] then
-			pcall(function() TrapESP.highlights[trapObj]:Destroy() end)
-			TrapESP.highlights[trapObj] = nil
-		end
-		if TrapESP.markers[trapObj] then
-			pcall(function() TrapESP.markers[trapObj]:Destroy() end)
-			TrapESP.markers[trapObj] = nil
-		end
-	end
-
-	local function scanForTraps()
-		local seen = {}
-		for _, obj in ipairs(workspace:GetDescendants()) do
-			if isTrapPart(obj) and isEnemyTrap(obj) then
-				local model = getTrapModel(obj)
-				if model and not seen[model] then
-					seen[model] = true
-					if not TrapESP.highlights[model] then
-						createTrapESP(model)
-					end
+		-- Pick primary part (largest part)
+		local primary, primarySize = nil, 0
+		local parts = {}
+		for _, ch in ipairs(model:GetChildren()) do
+			if ch:IsA("BasePart") then
+				table.insert(parts, ch)
+				local s = ch.Size.X * ch.Size.Y * ch.Size.Z
+				if s > primarySize then
+					primarySize = s
+					primary = ch
 				end
 			end
 		end
+
+		if not primary then return end
+
+		-- Highlight on the MODEL (all parts inside)
+		local hl = Instance.new("Highlight")
+		hl.Name = "MeridianTrapHL"
+		hl.Adornee = model
+		hl.FillColor = Color3.fromRGB(255, 30, 30)
+		hl.FillTransparency = 0.5
+		hl.OutlineColor = Color3.fromRGB(255, 30, 30)
+		hl.OutlineTransparency = 0
+		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		hl.Parent = model
+
+		-- Billboard on the PRIMARY part only (1 ❗)
+		local bb = Instance.new("BillboardGui")
+		bb.Name = "MeridianTrapMark"
+		bb.Adornee = primary
+		bb.Size = UDim2.new(0, 40, 0, 40)
+		bb.StudsOffset = Vector3.new(0, 3, 0)
+		bb.AlwaysOnTop = true
+		bb.LightInfluence = 0
+		bb.MaxDistance = 500
+		bb.Parent = primary
+
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = UDim2.new(1, 0, 1, 0)
+		lbl.BackgroundTransparency = 1
+		lbl.Text = "❗"
+		lbl.TextColor3 = Color3.fromRGB(255, 30, 30)
+		lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+		lbl.TextStrokeTransparency = 0
+		lbl.TextScaled = true
+		lbl.Font = Enum.Font.GothamBlack
+		lbl.Parent = bb
+
+		TrapESP.byModel[model] = { hl = hl, bb = bb, primary = primary, parts = parts }
 	end
 
+	local function removeESPModel(model)
+		local e = TrapESP.byModel[model]
+		if not e then return end
+		pcall(function() if e.hl then e.hl:Destroy() end end)
+		pcall(function() if e.bb then e.bb:Destroy() end end)
+		TrapESP.byModel[model] = nil
+	end
+
+	-- Handle part added (new trap part or new trap)
+	local function handlePart(part)
+		if not part:IsA("BasePart") then return end
+		local model = getTrapModel(part)
+		if model and not TrapESP.byModel[model] then
+			applyESPModel(model)
+		end
+	end
+
+	----------------------------------------------------------------
+	-- START / STOP
+	----------------------------------------------------------------
 	local function startTrapESP()
-		if TrapESP.enabled then return end
+		if #TrapESP.conns > 0 then return end
 		TrapESP.enabled = true
+		TrapESP.runId = TrapESP.runId + 1
+		local myRun = TrapESP.runId
 
-		scanForTraps()
+		-- Initial scan
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if obj:IsA("BasePart") then
+				handlePart(obj)
+			end
+		end
 
-		-- Watch for new traps
+		-- New trap (part or model)
 		table.insert(TrapESP.conns, workspace.DescendantAdded:Connect(function(obj)
-			if TrapESP.enabled and isTrapPart(obj) and isEnemyTrap(obj) then
-				task.defer(function()
-					local model = getTrapModel(obj)
-					if model and not TrapESP.highlights[model] then
-						createTrapESP(model)
-					end
-				end)
+			if not TrapESP.enabled then return end
+			if obj:IsA("BasePart") then
+				handlePart(obj)
+			elseif obj:IsA("Model") and (obj.Name == "Trap" or obj.Name:lower() == "trap") then
+				applyESPModel(obj)
 			end
 		end))
 
-		-- Watch for removed traps
+		-- Removed
 		table.insert(TrapESP.conns, workspace.DescendantRemoving:Connect(function(obj)
-			if TrapESP.highlights[obj] then removeTrapESP(obj) end
-			if TrapESP.markers[obj] then removeTrapESP(obj) end
+			if TrapESP.byModel[obj] then
+				removeESPModel(obj)
+			end
 		end))
 
-		-- Periodic rescan
+		-- Low-impact cleanup: 2 second interval
 		task.spawn(function()
-			while TrapESP.enabled do
+			while TrapESP.enabled and TrapESP.runId == myRun do
 				task.wait(2)
-				if TrapESP.enabled then scanForTraps() end
+				if not TrapESP.enabled or TrapESP.runId ~= myRun then break end
+				for model, _ in pairs(TrapESP.byModel) do
+					if not model or not model.Parent then
+						removeESPModel(model)
+					end
+				end
 			end
 		end)
 	end
 
 	local function stopTrapESP()
 		TrapESP.enabled = false
-		for _, c in ipairs(TrapESP.conns) do
-			pcall(function() c:Disconnect() end)
-		end
+		for model, _ in pairs(TrapESP.byModel) do removeESPModel(model) end
+		TrapESP.byModel = {}
+		TrapESP.tracked = {}
+		for _, c in ipairs(TrapESP.conns) do pcall(function() c:Disconnect() end) end
 		TrapESP.conns = {}
-		for obj, _ in pairs(TrapESP.highlights) do
-			removeTrapESP(obj)
-		end
-		TrapESP.highlights = {}
-		TrapESP.markers = {}
 	end
 
 	function setTrapESP(on)
@@ -3201,6 +3153,12 @@ do
 		if St.trapESP then startTrapESP() else stopTrapESP() end
 		pcall(saveCfg)
 	end
+
+	-- Same global hooks as the original script, routed through setTrapESP
+	-- so St.trapESP / saved config stay in sync with the toggle.
+	function _G.TrapESP_On() setTrapESP(true) end
+	function _G.TrapESP_Off() setTrapESP(false) end
+	function _G.TrapESP_Toggle() setTrapESP(not TrapESP.enabled) end
 end
 
 ----------------------------------------------------------------
